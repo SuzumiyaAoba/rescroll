@@ -17,7 +17,7 @@
        (progn
          (redisplay t)
          (let ((formatted (format-mode-line mode-line-format)))
-           (unless (text-property-any 0 (length formatted) 'rescroll-cell 0 formatted)
+           (unless (text-property-not-all 0 (length formatted) 'rescroll-bar nil formatted)
              (error "Scrollbar missing from formatted mode line")))
          (rescroll--seek (selected-window) 0.5)
          (redisplay t)

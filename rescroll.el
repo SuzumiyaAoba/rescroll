@@ -61,15 +61,17 @@ GRAPHICAL selects spaces with colored backgrounds instead of ASCII."
   (let ((bar (make-string width (if graphical ?\s ?-))))
     (unless graphical
       (dotimes (i thumb) (aset bar (+ left i) ?=)))
+    ;; A single marker run keeps the bar at O(1) intervals; the fresh cons
+    ;; keeps bars rendered separately distinct when concatenated.  The cell
+    ;; index is recovered at event time via `previous-single-property-change'.
+    ;; Two directly adjacent copies of the same cached string still merge,
+    ;; in which case the second bar's cells clamp to its rightmost cell.
     (add-text-properties
-     0 width `(face rescroll-track mouse-face highlight
-               local-map ,rescroll--map rescroll-width ,width
-               help-echo "Drag/click: seek; wheel: scroll") bar)
+     0 width (list 'face 'rescroll-track 'mouse-face 'highlight
+                   'local-map rescroll--map 'rescroll-width width
+                   'rescroll-bar (cons nil nil)
+                   'help-echo "Drag/click: seek; wheel: scroll") bar)
     (put-text-property left (+ left thumb) 'face 'rescroll-thumb bar)
-    ;; Each cell carries its coordinate even when Emacs concatenates this
-    ;; string into a larger mode-line string before delivering a mouse event.
-    (dotimes (i width)
-      (put-text-property i (1+ i) 'rescroll-cell i bar))
     bar))
 
 ;;;###autoload
@@ -95,19 +97,21 @@ it; do not call `window-end' with UPDATE non-nil from a mode-line evaluator."
                (left (if (<= travel 0) 0
                        (min (- width thumb)
                             (/ (* (- width thumb) (- start lo)) travel))))
-               (graphical (display-graphic-p (window-frame win)))
                (cache (window-parameter win 'rescroll--cache)))
           ;; Do not allocate even a cache-key list on the steady-state path.
           ;; A buffer switch/edit with identical geometry reuses the same bar.
+          ;; The display type is constant for a live window (windows never
+          ;; migrate between frames), so it is not part of the cache key.
           (if (and cache
                    (= width (aref cache 0))
                    (= left (aref cache 1))
-                   (= thumb (aref cache 2))
-                   (eq graphical (aref cache 3)))
-              (aref cache 4)
-            (let ((bar (rescroll--render width left thumb graphical)))
+                   (= thumb (aref cache 2)))
+              (aref cache 3)
+            (let ((bar (rescroll--render
+                        width left thumb
+                        (display-graphic-p (window-frame win)))))
               (set-window-parameter
-               win 'rescroll--cache (vector width left thumb graphical bar))
+               win 'rescroll--cache (vector width left thumb bar))
               bar)))))))
 
 (defun rescroll--seek (window fraction)
@@ -130,10 +134,18 @@ by character positions; do not scan to a logical line boundary."
          (index (cdr-safe text)))
     (when (and (window-live-p window) (stringp string)
                (integerp index) (<= 0 index) (< index (length string)))
-      (let ((cell (get-text-property index 'rescroll-cell string))
-            (width (get-text-property index 'rescroll-width string)))
-        (when (and (integerp cell) (integerp width) (> width 1))
-          (list window cell width))))))
+      (let ((width (get-text-property index 'rescroll-width string)))
+        ;; The marker run also works when Emacs concatenated this string into
+        ;; a larger mode-line string: its start is the bar's first cell.
+        ;; Adjacent identical bars merge into one run; clamping keeps CELL
+        ;; inside the bar instead of corrupting the seek.
+        (when (and (integerp width) (> width 1)
+                   (get-text-property index 'rescroll-bar string))
+          (let ((start (or (previous-single-property-change
+                            (1+ index) 'rescroll-bar string)
+                           0)))
+            (list window (min (1- width) (max 0 (- index start)))
+                  width)))))))
 
 (defun rescroll-mouse (event)
   "Seek and track a drag starting at mouse EVENT on the scrollbar.
@@ -158,14 +170,14 @@ Unrelated input is returned to the command loop, not swallowed."
                ((or (mouse-movement-p next)
                     (and (consp next) (eq (event-basic-type next) 'mouse-1)))
                 (let* ((end (event-end next))
-                       (exact (rescroll--coordinate end))
-                       (x (car (posn-x-y end))))
+                       (exact (rescroll--coordinate end)))
                   (when (eq window (posn-window end))
                     (rescroll--seek
                      window
                      (if (and exact (= width (nth 2 exact)))
                          (/ (float (nth 1 exact)) (1- width))
-                       (/ (+ cell (/ (- x origin) (float unit)))
+                       (/ (+ cell (/ (- (car (posn-x-y end)) origin)
+                                     (float unit)))
                           (1- width))))))
                 (unless (mouse-movement-p next) (setq done t)))
                (t

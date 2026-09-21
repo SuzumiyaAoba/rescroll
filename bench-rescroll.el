@@ -5,13 +5,15 @@
 (require 'benchmark)
 (require 'rescroll)
 
-(defun rescroll-benchmark--case (size long-line)
-  "Measure a SIZE-character buffer; LONG-LINE omits newlines."
+(defun rescroll-benchmark--case (size long-line &optional width)
+  "Measure a SIZE-character buffer; LONG-LINE omits newlines.
+WIDTH overrides `rescroll-width' to expose width-dependent render costs."
   (save-window-excursion
     (with-temp-buffer
       (switch-to-buffer (current-buffer))
       (set-window-parameter nil 'rescroll--cache nil)
-      (let ((chunk (concat (make-string 99 ?x) (if long-line "x" "\n"))))
+      (let ((rescroll-width (or width rescroll-width))
+            (chunk (concat (make-string 99 ?x) (if long-line "x" "\n"))))
         (dotimes (_ (/ size 100)) (insert chunk)))
       (goto-char (point-min))
       (set-window-start nil (point-min))
@@ -33,12 +35,14 @@
                    (set-window-start
                     nil (if (= (window-start) 1) (/ (point-max) 2) 1) t)
                    (rescroll-mode-line))))
-            (princ (format "%9d %9s cached-100k=%S edit-10k=%S changed-10k=%S\n"
+            (princ (format "%9d %9s w=%-3d cached-100k=%S edit-10k=%S changed-10k=%S\n"
                            size (if long-line "long-line" "lines")
-                           cached edited changed))))))))
+                           (or width 24) cached edited changed))))))))
 
 (princ (format "Emacs %s; (elapsed seconds, GC count, GC seconds)\n" emacs-version))
 (dolist (size '(50000 5000000 50000000))
   (rescroll-benchmark--case size nil))
 (rescroll-benchmark--case 50000000 t)
+;; Wide bars stress the cache-miss render path, not the cached path.
+(rescroll-benchmark--case 5000000 nil 512)
 ;;; bench-rescroll.el ends here

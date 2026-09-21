@@ -99,7 +99,7 @@
       (should (equal (substring-no-properties bar)
                      (if graphical "          " "---==-----")))
       (dotimes (i 10)
-        (should (= i (get-text-property i 'rescroll-cell bar)))
+        (should (get-text-property i 'rescroll-bar bar))
         (should (= 10 (get-text-property i 'rescroll-width bar)))
         (should (eq rescroll--map (get-text-property i 'local-map bar)))))))
 
@@ -145,11 +145,30 @@
 
 (ert-deftest rescroll-coordinate-survives-concatenation ()
   (rescroll-test--window
-    (let ((text (concat "prefix" (rescroll--render 10 0 1 nil))))
-      (should (equal (rescroll--coordinate
-                      (list (selected-window) 'mode-line '(0 . 0) 0
-                            (cons text 9)))
-                     (list (selected-window) 3 10))))))
+    (let ((bar (rescroll--render 10 0 1 nil)))
+      (let ((text (concat "prefix" bar)))
+        (should (equal (rescroll--coordinate
+                        (list (selected-window) 'mode-line '(0 . 0) 0
+                              (cons text 9)))
+                       (list (selected-window) 3 10)))
+        (should (equal (rescroll--coordinate
+                        (list (selected-window) 'mode-line '(0 . 0) 0
+                              (cons text 6)))
+                       (list (selected-window) 0 10))))
+      ;; Two distinct bars keep separate marker runs.
+      (let ((text (concat bar (rescroll--render 10 0 1 nil))))
+        (should (equal (rescroll--coordinate
+                        (list (selected-window) 'mode-line '(0 . 0) 0
+                              (cons text 15)))
+                       (list (selected-window) 5 10))))
+      ;; Two adjacent copies of the same cached string merge into one run;
+      ;; the cell clamps to the bar's rightmost cell instead of corrupting
+      ;; the seek.
+      (let ((text (concat bar bar)))
+        (should (equal (rescroll--coordinate
+                        (list (selected-window) 'mode-line '(0 . 0) 0
+                              (cons text 15)))
+                       (list (selected-window) 9 10)))))))
 
 (ert-deftest rescroll-undo-and-revert-shape ()
   (rescroll-test--window

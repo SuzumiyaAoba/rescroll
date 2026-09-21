@@ -52,7 +52,8 @@ The mode-line evaluator:
 - reads `point-min`, `point-max`, `window-start`, and cached `window-end`;
 - does constant-count arithmetic independent of buffer size;
 - reuses a per-window string if the quantized geometry has not changed;
-- allocates at most a bounded-width bar/cache when geometry changes;
+- allocates at most a bounded-width bar/cache when geometry changes, using a
+  constant number of text-property intervals regardless of width;
 - installs no edit hooks, timers, overlays, font-lock rules, or file I/O;
 - never forces redisplay or calls `window-end` with its update argument.
 
@@ -61,7 +62,10 @@ until the next redisplay. This avoids doing redisplay work recursively inside
 mode-line evaluation. Width determines position resolution (24 cells by default).
 Changing faces does not require rebuilding strings because they use face symbols.
 
-Clicks use text-property coordinates, including in concatenated mode-line strings.
+Clicks locate the cell through a marker text property and interval boundaries,
+including in concatenated mode-line strings. Two directly adjacent copies of the
+same bar string share one marker run, so the second copy's cells clamp to its
+right edge; a separating character avoids this.
 Dragging outside the bar uses frame character width as a fallback; this can be
 approximate with proportional mode-line fonts. Mouse movement across other windows
 is ignored until it returns to the originating window. No SVG/image backend, right
