@@ -31,13 +31,15 @@ WIDTH overrides `rescroll-width' to expose width-dependent render costs."
                  (rescroll-mode-line))))
           (garbage-collect)
           (let ((changed
-                 ;; Cycle three positions so every call is a real render:
-                 ;; the two-entry window cache still misses.
+                 ;; Cycle five positions so every call is a real render:
+                 ;; the four-entry window cache still misses.
                  (benchmark-run-compiled 10000
                    (set-window-start
-                    nil (let ((p (/ (point-max) 3)))
+                    nil (let ((p (/ (point-max) 6)))
                           (cond ((= (window-start) 1) p)
                                 ((= (window-start) p) (* 2 p))
+                                ((= (window-start) (* 2 p)) (* 3 p))
+                                ((= (window-start) (* 3 p)) (* 4 p))
                                 (t 1)))
                     t)
                    (rescroll-mode-line))))

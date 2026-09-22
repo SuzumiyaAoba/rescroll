@@ -50,19 +50,35 @@
                  (lambda (win &rest _) (+ 100 (window-start win)))))
         (set-window-start nil 1)
         (let ((first (rescroll-mode-line)))
-          (set-window-start nil 500)
+          (set-window-start nil 201)
           (let ((second (rescroll-mode-line)))
             (should-not (eq first second))
-            ;; Revisiting the previous geometry reuses its rendered string.
+            ;; Revisiting an older geometry reuses its rendered string.
             (set-window-start nil 1)
             (should (eq first (rescroll-mode-line)))
-            (set-window-start nil 500)
+            (set-window-start nil 201)
             (should (eq second (rescroll-mode-line)))
-            ;; A third geometry renders afresh and evicts the oldest entry.
-            (set-window-start nil 900)
+            ;; Third and fourth geometries render afresh; all four stay
+            ;; resident and reusable afterwards.
+            (set-window-start nil 401)
             (let ((third (rescroll-mode-line)))
               (should-not (eq third first))
-              (should-not (eq third second)))))))))
+              (should-not (eq third second))
+              (set-window-start nil 601)
+              (let ((fourth (rescroll-mode-line)))
+                (should-not (eq fourth third))
+                (set-window-start nil 1)
+                (should (eq first (rescroll-mode-line)))
+                (set-window-start nil 401)
+                (should (eq third (rescroll-mode-line)))
+                ;; A fifth distinct geometry evicts the oldest entry.
+                (set-window-start nil 801)
+                (rescroll-mode-line)
+                (set-window-start nil 1)
+                (should-not (eq first (rescroll-mode-line)))
+                ;; The newest survivors remain cached.
+                (set-window-start nil 601)
+                (should (eq fourth (rescroll-mode-line)))))))))))
 
 (ert-deftest rescroll-no-text-scan-or-forced-window-end ()
   (rescroll-test--window
@@ -90,6 +106,24 @@
     (widen)
     (rescroll--seek (selected-window) 1)
     (should (= (window-point) 1001))))
+
+(ert-deftest rescroll-seek-skips-unchanged-target ()
+  (rescroll-test--window
+    (insert (make-string 1000 ?x))
+    (let ((calls 0)
+          (orig (symbol-function 'set-window-start)))
+      (cl-letf (((symbol-function 'set-window-start)
+                 (lambda (&rest args) (setq calls (1+ calls)) (apply orig args))))
+        (rescroll--seek (selected-window) 0.5)
+        (should (= calls 1))
+        ;; Re-seeking the position the window already occupies must not
+        ;; flag another redisplay.
+        (rescroll--seek (selected-window) 0.5)
+        (rescroll--seek (selected-window) 0.5)
+        (should (= calls 1))
+        ;; A genuinely different target still seeks.
+        (rescroll--seek (selected-window) 0.75)
+        (should (= calls 2))))))
 
 (ert-deftest rescroll-window-isolation ()
   (rescroll-test--window

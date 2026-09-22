@@ -52,8 +52,8 @@ The mode-line evaluator:
 - reads `point-min`, `point-max`, `window-start`, and cached `window-end`;
 - does constant-count arithmetic independent of buffer size;
 - reuses a per-window string if the quantized geometry has not changed;
-- keeps the previous geometry's bar too, so scroll reversals and other
-  two-position revisits skip rendering entirely;
+- keeps the three previous geometries' bars too, so scroll reversals and
+  other revisits of recent positions skip rendering entirely;
 - allocates at most a bounded-width bar when geometry changes, using a
   constant number of text-property intervals regardless of width, and
   reuses the per-window cache vector instead of allocating;
@@ -88,7 +88,7 @@ make clean
 
 Set `EMACS=/path/to/emacs` to choose the executable. The benchmark visits generated
 50 KB, 5 MB, and 50 MB buffers, including a single-long-line case. It measures
-cached evaluation, edit+evaluation, and cycling among three window positions
+cached evaluation, edit+evaluation, and cycling among five window positions
 (true cache misses) separately, using temporary buffers only. Background native JIT is
 disabled; `benchmark-run-compiled` compiles the measurement loops.
 No user files, init, or package state are loaded. See `bench-rescroll.el` for the exact

@@ -11,8 +11,8 @@
 
 ;; An interactive mode-line scrollbar using character positions, not line
 ;; counts.  Rendering never scans buffer text, creates overlays, runs timers,
-;; or forces redisplay.  A two-entry window-local cache reuses rendered
-;; strings for the current and previous quantized geometries.  Enable
+;; or forces redisplay.  A window-local cache reuses rendered strings for
+;; the four most recent quantized geometries.  Enable
 ;; globally with `rescroll-mode', or place (:eval (rescroll-mode-line))
 ;; in your own mode-line format.
 ;;
@@ -134,8 +134,10 @@ WIN's buffer must be the current buffer."
     ;; A buffer switch/edit with identical geometry reuses the same bar.
     ;; The display type is constant for a live window (windows never
     ;; migrate between frames), so it is not part of the cache key.
-    ;; Slots 5-8 hold the previous geometry's key and bar, so revisiting
-    ;; it (scroll reversal, undo, ...) skips the render entirely.
+    ;; Slots 5-16 hold the three previous geometries' keys and bars, so
+    ;; revisiting any of the last four (scroll reversal, undo, ...) skips
+    ;; the render entirely.  Entries are FIFO: hits never reorder them,
+    ;; which already keeps any resident oscillation rendering-free.
     (cond
      ((and cache
            (= left (aref cache 1))
@@ -147,13 +149,32 @@ WIN's buffer must be the current buffer."
            (= thumb (aref cache 7))
            (= width (aref cache 5)))
       (aref cache 8))
+     ((and cache (> (length cache) 12) (aref cache 12)
+           (= left (aref cache 10))
+           (= thumb (aref cache 11))
+           (= width (aref cache 9)))
+      (aref cache 12))
+     ((and cache (> (length cache) 16) (aref cache 16)
+           (= left (aref cache 14))
+           (= thumb (aref cache 15))
+           (= width (aref cache 13)))
+      (aref cache 16))
      (t
       (let* ((graphical (if (and cache (> (length cache) 4))
                             (aref cache 4)
                           (display-graphic-p (window-frame win))))
              (bar (rescroll--render width left thumb graphical)))
-        (if (and cache (> (length cache) 8))
+        (if (and cache (> (length cache) 16))
             (progn
+              ;; Shift entries down; the oldest geometry evicts.
+              (aset cache 13 (aref cache 9))
+              (aset cache 14 (aref cache 10))
+              (aset cache 15 (aref cache 11))
+              (aset cache 16 (aref cache 12))
+              (aset cache 9 (aref cache 5))
+              (aset cache 10 (aref cache 6))
+              (aset cache 11 (aref cache 7))
+              (aset cache 12 (aref cache 8))
               (aset cache 5 (aref cache 0))
               (aset cache 6 (aref cache 1))
               (aset cache 7 (aref cache 2))
@@ -162,7 +183,9 @@ WIN's buffer must be the current buffer."
               (aset cache 1 left)
               (aset cache 2 thumb)
               (aset cache 3 bar))
-          (let ((new (vector width left thumb bar graphical -1 -1 -1 nil)))
+          ;; A short vector predates the four-entry layout; replace it.
+          (let ((new (vector width left thumb bar graphical
+                             -1 -1 -1 nil -1 -1 -1 nil -1 -1 -1 nil)))
             (set-window-parameter win 'rescroll--cache new)
             ;; On a second-slot hit `rescroll--memo-win' holds another
             ;; window; promote WIN to the first slot first.
@@ -200,8 +223,15 @@ by character positions; do not scan to a logical line boundary."
       (let* ((lo (point-min))
              (span (- (point-max) lo))
              (target (+ lo (round (* span (max 0.0 (min 1.0 fraction)))))))
-        (set-window-point window target)
-        (set-window-start window target t)))))
+        ;; Both setters flag the window for redisplay even when the values
+        ;; are unchanged, so skip them when WINDOW already sits at TARGET.
+        ;; Both must match: redisplay can legitimately move start away
+        ;; from an unreachable target, which a point-only check would
+        ;; leave uncorrected.
+        (unless (and (= (window-point window) target)
+                     (= (window-start window) target))
+          (set-window-point window target)
+          (set-window-start window target t))))))
 
 (defun rescroll--coordinate (position)
   "Return (WINDOW CELL WIDTH) for scrollbar POSITION, or nil."
