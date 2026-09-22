@@ -52,8 +52,11 @@ The mode-line evaluator:
 - reads `point-min`, `point-max`, `window-start`, and cached `window-end`;
 - does constant-count arithmetic independent of buffer size;
 - reuses a per-window string if the quantized geometry has not changed;
-- allocates at most a bounded-width bar/cache when geometry changes, using a
-  constant number of text-property intervals regardless of width;
+- keeps the previous geometry's bar too, so scroll reversals and other
+  two-position revisits skip rendering entirely;
+- allocates at most a bounded-width bar when geometry changes, using a
+  constant number of text-property intervals regardless of width, and
+  reuses the per-window cache vector instead of allocating;
 - installs no edit hooks, timers, overlays, font-lock rules, or file I/O;
 - never forces redisplay or calls `window-end` with its update argument.
 
@@ -85,8 +88,8 @@ make clean
 
 Set `EMACS=/path/to/emacs` to choose the executable. The benchmark visits generated
 50 KB, 5 MB, and 50 MB buffers, including a single-long-line case. It measures
-cached evaluation, edit+evaluation, and alternating window positions (cache
-misses) separately, using temporary buffers only. Background native JIT is
+cached evaluation, edit+evaluation, and cycling among three window positions
+(true cache misses) separately, using temporary buffers only. Background native JIT is
 disabled; `benchmark-run-compiled` compiles the measurement loops.
 No user files, init, or package state are loaded. See `bench-rescroll.el` for the exact
 workload. Repeat in fresh processes and compare medians; do not interpret a single
@@ -114,13 +117,12 @@ One synthetic batch run (not a median or comparison against mlscroll):
 
 | Buffer | Cached evaluation ×100,000 | Edit + evaluation ×10,000 | Changed geometry ×10,000 |
 | --- | ---: | ---: | ---: |
-| 50 KB | 39.3 ms | 14.5 ms | 130.2 ms |
-| 5 MB | 39.1 ms | 12.4 ms | 128.0 ms |
-| 50 MB | 39.5 ms | 14.5 ms | 112.9 ms |
-| 50 MB, single line | 40.6 ms | 17.5 ms | 135.1 ms |
+| 50 KB | 36.1 ms | 14.1 ms | 18.4 ms |
+| 5 MB | 35.5 ms | 10.4 ms | 17.9 ms |
+| 50 MB | 38.7 ms | 17.4 ms | 16.8 ms |
+| 50 MB, single line | 34.6 ms | 16.7 ms | 7.2 ms |
 
-Cached and edited paths caused zero GCs in this run; changed geometry caused
-nine GCs per case, included in these times. This supports size-independent
+No measured path caused a GC in this run. This supports size-independent
 evaluator work, not a claim about whole-editor input latency. The batch fixture
 has no real redisplay and exercises cached/unknown window ends. Emacs 29/30 and
 Linux have not yet been tested.

@@ -42,6 +42,28 @@
           (should (eq (get-text-property 9 'face bar) 'rescroll-thumb))
           (should (eq (get-text-property 8 'face bar) 'rescroll-track)))))))
 
+(ert-deftest rescroll-previous-geometry-cache ()
+  (rescroll-test--window
+    (insert (make-string 1000 ?x))
+    (let ((rescroll-width 10))
+      (cl-letf (((symbol-function 'window-end)
+                 (lambda (win &rest _) (+ 100 (window-start win)))))
+        (set-window-start nil 1)
+        (let ((first (rescroll-mode-line)))
+          (set-window-start nil 500)
+          (let ((second (rescroll-mode-line)))
+            (should-not (eq first second))
+            ;; Revisiting the previous geometry reuses its rendered string.
+            (set-window-start nil 1)
+            (should (eq first (rescroll-mode-line)))
+            (set-window-start nil 500)
+            (should (eq second (rescroll-mode-line)))
+            ;; A third geometry renders afresh and evicts the oldest entry.
+            (set-window-start nil 900)
+            (let ((third (rescroll-mode-line)))
+              (should-not (eq third first))
+              (should-not (eq third second)))))))))
+
 (ert-deftest rescroll-no-text-scan-or-forced-window-end ()
   (rescroll-test--window
     (insert (make-string 1000000 ?x))
@@ -99,8 +121,10 @@
       (should (equal (substring-no-properties bar)
                      (if graphical "          " "---==-----")))
       (dotimes (i 10)
-        (should (get-text-property i 'rescroll-bar bar))
-        (should (= 10 (get-text-property i 'rescroll-width bar)))
+        (let ((marker (get-text-property i 'rescroll-bar bar)))
+          (should (consp marker))
+          (should (= 10 (car marker)))
+          (should (eq bar (cdr marker))))
         (should (eq rescroll--map (get-text-property i 'local-map bar)))))))
 
 (ert-deftest rescroll-mode-restores-and-is-idempotent ()

@@ -11,9 +11,10 @@
 
 ;; An interactive mode-line scrollbar using character positions, not line
 ;; counts.  Rendering never scans buffer text, creates overlays, runs timers,
-;; or forces redisplay.  Window-local caches reuse the rendered string until
-;; its quantized geometry changes.  Enable globally with `rescroll-mode', or
-;; place (:eval (rescroll-mode-line)) in your own mode-line format.
+;; or forces redisplay.  A two-entry window-local cache reuses rendered
+;; strings for the current and previous quantized geometries.  Enable
+;; globally with `rescroll-mode', or place (:eval (rescroll-mode-line))
+;; in your own mode-line format.
 ;;
 ;; Click/drag to seek; wheel to scroll.  Long lines and invisible text occupy
 ;; their character-proportional share of the bar.  This deliberate tradeoff
@@ -55,24 +56,122 @@
     map)
   "Mouse bindings carried by scrollbar text.")
 
+(defconst rescroll--props
+  (list 'face 'rescroll-track 'mouse-face 'highlight
+        'local-map rescroll--map
+        'help-echo "Drag/click: seek; wheel: scroll")
+  "Constant text properties shared by every rendered bar; never mutated.")
+
+(defconst rescroll--props-thumb
+  (list 'face 'rescroll-thumb 'mouse-face 'highlight
+        'local-map rescroll--map
+        'help-echo "Drag/click: seek; wheel: scroll")
+  "Like `rescroll--props' but with the thumb face over the whole bar.")
+
 (defun rescroll--render (width left thumb graphical)
   "Build a WIDTH-cell bar with LEFT track cells and THUMB thumb cells.
 GRAPHICAL selects spaces with colored backgrounds instead of ASCII."
-  (let ((bar (make-string width (if graphical ?\s ?-))))
-    (unless graphical
-      (dotimes (i thumb) (aset bar (+ left i) ?=)))
-    ;; A single marker run keeps the bar at O(1) intervals; the fresh cons
-    ;; keeps bars rendered separately distinct when concatenated.  The cell
-    ;; index is recovered at event time via `previous-single-property-change'.
-    ;; Two directly adjacent copies of the same cached string still merge,
-    ;; in which case the second bar's cells clamp to its rightmost cell.
-    (add-text-properties
-     0 width (list 'face 'rescroll-track 'mouse-face 'highlight
-                   'local-map rescroll--map 'rescroll-width width
-                   'rescroll-bar (cons nil nil)
-                   'help-echo "Drag/click: seek; wheel: scroll") bar)
-    (put-text-property left (+ left thumb) 'face 'rescroll-thumb bar)
-    bar))
+  ;; A single marker run keeps the bar at O(1) intervals; the fresh cons
+  ;; carries the width and keeps bars rendered separately distinct when
+  ;; concatenated.  The cell index is recovered at event time via
+  ;; `previous-single-property-change'.  Two directly adjacent copies of
+  ;; the same cached string still merge, in which case the second bar's
+  ;; cells clamp to its rightmost cell.
+  (if (= thumb width)
+      ;; A buffer that fits entirely in the window: one interval.
+      (let ((bar (make-string width (if graphical ?\s ?=))))
+        (add-text-properties 0 width rescroll--props-thumb bar)
+        (put-text-property 0 width 'rescroll-bar (cons width bar) bar)
+        bar)
+    (let ((bar (make-string width (if graphical ?\s ?-))))
+      (unless graphical
+        (dotimes (i thumb) (aset bar (+ left i) ?=)))
+      (add-text-properties 0 width rescroll--props bar)
+      (put-text-property left (+ left thumb) 'face 'rescroll-thumb bar)
+      (put-text-property 0 width 'rescroll-bar (cons width bar) bar)
+      bar)))
+
+;; Two-entry memo for the per-window cache; covers one- and two-window
+;; frames without touching `window-parameter' on the steady-state path.
+(defvar rescroll--memo-win nil)
+(defvar rescroll--memo-cache nil)
+(defvar rescroll--memo-win2 nil)
+(defvar rescroll--memo-cache2 nil)
+
+(defsubst rescroll--evaluate (win)
+  "Return the scrollbar string for live window WIN.
+WIN's buffer must be the current buffer."
+  (let* ((width (if (<= 3 rescroll-width 512)
+                    rescroll-width
+                  (max 3 (min 512 rescroll-width))))
+         (lo (point-min))
+         (hi (point-max))
+         (span (- hi lo))
+         (start (max lo (min hi (window-start win))))
+         (end (let ((e (window-end win)))
+                (if e (max start (min hi e)) start)))
+         (visible (- end start))
+         (thumb (if (zerop span) width
+                  (max 1 (min width (/ (* width visible) span)))))
+         (travel (- span visible))
+         (left (if (<= travel 0) 0
+                 (min (- width thumb)
+                      (/ (* (- width thumb) (- start lo)) travel))))
+         ;; `window-parameter' costs more than its short `assq' suggests;
+         ;; memoize the lookups.  The vector is self-validating, so a
+         ;; stale entry can only return a geometry-correct bar.
+         (cache (cond
+                 ((eq win rescroll--memo-win) rescroll--memo-cache)
+                 ((eq win rescroll--memo-win2) rescroll--memo-cache2)
+                 (t
+                  (let ((c (window-parameter win 'rescroll--cache)))
+                    (setq rescroll--memo-win2 rescroll--memo-win
+                          rescroll--memo-cache2 rescroll--memo-cache
+                          rescroll--memo-win win
+                          rescroll--memo-cache c)
+                    c)))))
+    ;; Do not allocate even a cache-key list on the steady-state path.
+    ;; A buffer switch/edit with identical geometry reuses the same bar.
+    ;; The display type is constant for a live window (windows never
+    ;; migrate between frames), so it is not part of the cache key.
+    ;; Slots 5-8 hold the previous geometry's key and bar, so revisiting
+    ;; it (scroll reversal, undo, ...) skips the render entirely.
+    (cond
+     ((and cache
+           (= left (aref cache 1))
+           (= thumb (aref cache 2))
+           (= width (aref cache 0)))
+      (aref cache 3))
+     ((and cache (> (length cache) 8) (aref cache 8)
+           (= left (aref cache 6))
+           (= thumb (aref cache 7))
+           (= width (aref cache 5)))
+      (aref cache 8))
+     (t
+      (let* ((graphical (if (and cache (> (length cache) 4))
+                            (aref cache 4)
+                          (display-graphic-p (window-frame win))))
+             (bar (rescroll--render width left thumb graphical)))
+        (if (and cache (> (length cache) 8))
+            (progn
+              (aset cache 5 (aref cache 0))
+              (aset cache 6 (aref cache 1))
+              (aset cache 7 (aref cache 2))
+              (aset cache 8 (aref cache 3))
+              (aset cache 0 width)
+              (aset cache 1 left)
+              (aset cache 2 thumb)
+              (aset cache 3 bar))
+          (let ((new (vector width left thumb bar graphical -1 -1 -1 nil)))
+            (set-window-parameter win 'rescroll--cache new)
+            ;; On a second-slot hit `rescroll--memo-win' holds another
+            ;; window; promote WIN to the first slot first.
+            (unless (eq win rescroll--memo-win)
+              (setq rescroll--memo-win2 rescroll--memo-win
+                    rescroll--memo-cache2 rescroll--memo-cache
+                    rescroll--memo-win win))
+            (setq rescroll--memo-cache new)))
+        bar)))))
 
 ;;;###autoload
 (defun rescroll-mode-line (&optional window)
@@ -82,37 +181,15 @@ Only character positions and cached redisplay bounds are inspected.  If the
 window end is not yet known, display a minimal thumb until redisplay supplies
 it; do not call `window-end' with UPDATE non-nil from a mode-line evaluator."
   (let ((win (or window (selected-window))))
-    (when (window-live-p win)
-      (with-current-buffer (window-buffer win)
-        (let* ((width (max 3 (min 512 rescroll-width)))
-               (lo (point-min))
-               (hi (point-max))
-               (span (- hi lo))
-               (start (max lo (min hi (window-start win))))
-               (end (max start (min hi (or (window-end win) start))))
-               (visible (- end start))
-               (thumb (if (zerop span) width
-                        (max 1 (min width (/ (* width visible) span)))))
-               (travel (- span visible))
-               (left (if (<= travel 0) 0
-                       (min (- width thumb)
-                            (/ (* (- width thumb) (- start lo)) travel))))
-               (cache (window-parameter win 'rescroll--cache)))
-          ;; Do not allocate even a cache-key list on the steady-state path.
-          ;; A buffer switch/edit with identical geometry reuses the same bar.
-          ;; The display type is constant for a live window (windows never
-          ;; migrate between frames), so it is not part of the cache key.
-          (if (and cache
-                   (= width (aref cache 0))
-                   (= left (aref cache 1))
-                   (= thumb (aref cache 2)))
-              (aref cache 3)
-            (let ((bar (rescroll--render
-                        width left thumb
-                        (display-graphic-p (window-frame win)))))
-              (set-window-parameter
-               win 'rescroll--cache (vector width left thumb bar))
-              bar)))))))
+    ;; The selected window is always live; only check explicit arguments.
+    (when (or (not window) (window-live-p win))
+      ;; Mode-line evaluation already runs with the window's buffer current;
+      ;; skip the buffer switch bookkeeping in that common case.
+      (let ((buf (window-buffer win)))
+        (if (eq buf (current-buffer))
+            (rescroll--evaluate win)
+          (with-current-buffer buf
+            (rescroll--evaluate win)))))))
 
 (defun rescroll--seek (window fraction)
   "Move WINDOW to FRACTION of its accessible character range.
@@ -134,16 +211,16 @@ by character positions; do not scan to a logical line boundary."
          (index (cdr-safe text)))
     (when (and (window-live-p window) (stringp string)
                (integerp index) (<= 0 index) (< index (length string)))
-      (let ((width (get-text-property index 'rescroll-width string)))
+      (let ((marker (get-text-property index 'rescroll-bar string)))
         ;; The marker run also works when Emacs concatenated this string into
         ;; a larger mode-line string: its start is the bar's first cell.
         ;; Adjacent identical bars merge into one run; clamping keeps CELL
         ;; inside the bar instead of corrupting the seek.
-        (when (and (integerp width) (> width 1)
-                   (get-text-property index 'rescroll-bar string))
-          (let ((start (or (previous-single-property-change
-                            (1+ index) 'rescroll-bar string)
-                           0)))
+        (when (and (consp marker) (integerp (car marker)) (> (car marker) 1))
+          (let* ((width (car marker))
+                 (start (or (previous-single-property-change
+                             (1+ index) 'rescroll-bar string)
+                            0)))
             (list window (min (1- width) (max 0 (- index start)))
                   width)))))))
 
@@ -161,8 +238,9 @@ Unrelated input is returned to the command loop, not swallowed."
              ;; posn-x-y uses pixels in GUI frames, character cells in TTYs.
              (unit (if (display-graphic-p (window-frame window))
                        (frame-char-width (window-frame window)) 1))
+             (last (/ (float cell) (1- width)))
              (done nil))
-        (rescroll--seek window (/ (float cell) (1- width)))
+        (rescroll--seek window last)
         (track-mouse
           (while (and (not done) (window-live-p window))
             (let ((next (read-event)))
@@ -172,13 +250,17 @@ Unrelated input is returned to the command loop, not swallowed."
                 (let* ((end (event-end next))
                        (exact (rescroll--coordinate end)))
                   (when (eq window (posn-window end))
-                    (rescroll--seek
-                     window
-                     (if (and exact (= width (nth 2 exact)))
-                         (/ (float (nth 1 exact)) (1- width))
-                       (/ (+ cell (/ (- (car (posn-x-y end)) origin)
-                                     (float unit)))
-                          (1- width))))))
+                    (let ((fraction
+                           (if (and exact (= width (nth 2 exact)))
+                               (/ (float (nth 1 exact)) (1- width))
+                             (/ (+ cell (/ (- (car (posn-x-y end)) origin)
+                                           (float unit)))
+                                (1- width)))))
+                      ;; Mouse events often repeat the same cell; do not
+                      ;; re-seek (and re-display) for an unchanged fraction.
+                      (unless (= fraction last)
+                        (setq last fraction)
+                        (rescroll--seek window fraction)))))
                 (unless (mouse-movement-p next) (setq done t)))
                (t
                 (setq unread-command-events (cons next unread-command-events)
@@ -222,7 +304,11 @@ replaced our format in the meantime."
     (when rescroll--installed
       (when (eq (default-value 'mode-line-end-spaces) rescroll--format)
         (set-default 'mode-line-end-spaces rescroll--saved-end-spaces))
-      (setq rescroll--installed nil)
+      (setq rescroll--installed nil
+            rescroll--memo-win nil
+            rescroll--memo-cache nil
+            rescroll--memo-win2 nil
+            rescroll--memo-cache2 nil)
       (dolist (frame (frame-list))
         (dolist (win (window-list frame 'no-minibuffer))
           (set-window-parameter win 'rescroll--cache nil)))))
